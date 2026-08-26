@@ -16,15 +16,15 @@ QtObject {
   signal operationFinished(string action, bool success)
 
   function run(args, action) {
-    if (process.running) {
+    if (helper.running) {
       statusWarning = true
       statusMessage = "Another Web App Manager operation is still running."
       return false
     }
     pendingAction = action
     busy = true
-    process.command = [root.helperPath].concat(args)
-    process.running = true
+    helper.command = [root.helperPath].concat(args)
+    helper.running = true
     return true
   }
 
@@ -76,8 +76,8 @@ QtObject {
     Qt.callLater(root.refresh)
   }
 
-  Process {
-    id: process
+  property var helperProcess: Process {
+    id: helper
     command: []
 
     stdout: StdioCollector {
