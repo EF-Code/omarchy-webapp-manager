@@ -9,8 +9,7 @@ import "WebAppModel.js" as Model
 Panel {
   id: root
   moduleName: "io.github.ef-code.webapp-manager"
-  ipcTarget: "io.github.ef-code.webapp-manager"
-  manageIpc: true
+  manageIpc: false
 
   property var anchorItem: null
   property var hostWidget: null
