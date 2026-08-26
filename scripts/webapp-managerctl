@@ -1,0 +1,242 @@
+#!/usr/bin/env bash
+
+set -u
+set -o pipefail
+
+readonly MAX_APPS=256
+readonly DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+readonly DESKTOP_DIR="$DATA_HOME/applications"
+
+json_error() {
+  local code="$1"
+  local message="$2"
+  jq -cn --arg code "$code" --arg message "$message" \
+    '{ok:false,error:{code:$code,message:$message}}'
+}
+
+json_ok() {
+  jq -cn '{ok:true}'
+}
+
+desktop_value() {
+  local key="$1"
+  local file="$2"
+
+  awk -v key="$key" '
+    $0 == "[Desktop Entry]" { in_entry = 1; next }
+    /^\[/ { if (in_entry) exit }
+    in_entry && index($0, key "=") == 1 {
+      print substr($0, length(key) + 2)
+      exit
+    }
+  ' "$file"
+}
+
+is_webapp_exec() {
+  local exec_line="$1"
+  [[ "$exec_line" == *omarchy-launch-webapp* || "$exec_line" == *omarchy-webapp-handler* ]]
+}
+
+is_safe_name() {
+  local value="$1"
+  [[ -n "$value" && ${#value} -le 120 ]] || return 1
+  [[ "$value" != "." && "$value" != ".." && "$value" != "all" ]] || return 1
+  [[ "$value" != *"/"* && "$value" != *"\\"* ]] || return 1
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *$'\t'* ]] || return 1
+}
+
+is_safe_url() {
+  local value="$1"
+  [[ ${#value} -le 2048 ]] || return 1
+  [[ "$value" =~ ^https?://[^[:space:]]+$ ]]
+}
+
+icon_state() {
+  local icon="$1"
+  local icon_dir="$DATA_HOME/icons/hicolor/256x256/apps"
+
+  if [[ -z "$icon" ]]; then
+    printf '%s\n' "missing"
+    return
+  fi
+  if [[ "$icon" == /* ]]; then
+    [[ -f "$icon" ]] && printf '%s\n' "present" || printf '%s\n' "missing"
+    return
+  fi
+  if [[ -f "$icon_dir/$icon.png" || -f "$icon_dir/$icon.svg" || -f "$icon_dir/$icon.webp" ]]; then
+    printf '%s\n' "present"
+    return
+  fi
+  # Named icons may be supplied by the system theme; leave those as unknown
+  # rather than walking all of /usr/share/icons on every panel refresh.
+  printf '%s\n' "unknown"
+}
+
+scan_apps() {
+  local -a entries=()
+  local file exec_line name url icon mime_types kind status icon_status desktop_id
+
+  if [[ ! -d "$DESKTOP_DIR" ]]; then
+    jq -cn '{ok:true,apps:[]}'
+    return 0
+  fi
+
+  while IFS= read -r -d '' file; do
+    exec_line="$(desktop_value Exec "$file")"
+    is_webapp_exec "$exec_line" || continue
+
+    name="$(desktop_value Name "$file")"
+    desktop_id="$(basename "$file" .desktop)"
+    [[ -n "$name" ]] || name="$desktop_id"
+    url="$(printf '%s\n' "$exec_line" | sed -nE 's/.*(https?:\/\/[^[:space:]\"]+).*/\1/p' | head -n 1)"
+    icon="$(desktop_value Icon "$file")"
+    mime_types="$(desktop_value MimeType "$file")"
+    kind="webapp"
+    status="healthy"
+
+    if [[ "$exec_line" == *omarchy-webapp-handler* ]]; then
+      kind="handler"
+      status="handler"
+    elif ! is_safe_url "$url"; then
+      status="invalid-url"
+    fi
+
+    icon_status="$(icon_state "$icon")"
+    [[ "$status" == "healthy" && "$icon_status" == "missing" ]] && status="missing-icon"
+
+    entries+=("$(jq -cn \
+      --arg desktopFile "$file" \
+      --arg desktopId "$desktop_id" \
+      --arg name "$name" \
+      --arg url "$url" \
+      --arg exec "$exec_line" \
+      --arg icon "$icon" \
+      --arg iconState "$icon_status" \
+      --arg mimeTypes "$mime_types" \
+      --arg kind "$kind" \
+      --arg status "$status" \
+      '{desktopFile:$desktopFile,desktopId:$desktopId,name:$name,url:$url,exec:$exec,icon:$icon,iconState:$iconState,mimeTypes:$mimeTypes,kind:$kind,status:$status}')")
+
+    ((${#entries[@]} >= MAX_APPS)) && break
+  done < <(find "$DESKTOP_DIR" -maxdepth 1 -type f -name '*.desktop' -print0 | sort -z)
+
+  if ((${#entries[@]} == 0)); then
+    jq -cn '{ok:true,apps:[]}'
+  else
+    printf '%s\n' "${entries[@]}" | jq -sc '{ok:true,apps:.}'
+  fi
+}
+
+install_app() {
+  local name="" url="" icon=""
+  while (($# > 0)); do
+    case "$1" in
+      --name) (($# >= 2)) || { json_error "missing-name" "Missing app name."; return 2; }; name="$2"; shift 2 ;;
+      --url) (($# >= 2)) || { json_error "missing-url" "Missing app URL."; return 2; }; url="$2"; shift 2 ;;
+      --icon) (($# >= 2)) || { json_error "missing-icon" "Missing icon value."; return 2; }; icon="$2"; shift 2 ;;
+      *) json_error "unknown-argument" "Unknown install argument."; return 2 ;;
+    esac
+  done
+
+  is_safe_name "$name" || { json_error "invalid-name" "Choose a safe app name."; return 2; }
+  is_safe_url "$url" || { json_error "invalid-url" "Use a complete http:// or https:// URL."; return 2; }
+  if [[ -n "$icon" && ! "$icon" =~ ^https?://[^[:space:]]+$ && ! "$icon" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    json_error "invalid-icon" "Use an icon name or an http(s) icon URL."
+    return 2
+  fi
+
+  local output
+  if output="$(omarchy webapp install "$name" "$url" "$icon" 2>&1)"; then
+    jq -cn --arg output "${output:0:1000}" '{ok:true,output:$output}'
+    return 0
+  fi
+  json_error "install-failed" "${output:0:1000}"
+  return 1
+}
+
+user_desktop_file() {
+  local candidate="$1"
+  local expected_dir resolved
+  expected_dir="$(realpath -m -- "$DESKTOP_DIR")" || return 1
+  resolved="$(realpath -e -- "$candidate" 2>/dev/null)" || return 1
+  [[ "$resolved" == "$expected_dir/"*.desktop ]] || return 1
+  printf '%s\n' "$resolved"
+}
+
+remove_app() {
+  local requested="$1"
+  local file
+  file="$(user_desktop_file "$requested")" || {
+    json_error "unsafe-path" "Only a user-owned web-app launcher can be removed."
+    return 2
+  }
+
+  local exec_line name trash_dir trash_file
+  exec_line="$(desktop_value Exec "$file")"
+  is_webapp_exec "$exec_line" || {
+    json_error "not-webapp" "The selected desktop file is not an Omarchy web app."
+    return 2
+  }
+
+  name="$(basename "$file" .desktop)"
+  trash_dir="${XDG_DATA_HOME:-$HOME/.local/share}/Trash/files"
+  mkdir -p "$trash_dir"
+  trash_file="$trash_dir/$name.desktop"
+  if [[ -e "$trash_file" ]]; then
+    trash_file="$trash_dir/$name.$$.desktop"
+  fi
+  if ! mv -- "$file" "$trash_file"; then
+    json_error "remove-failed" "Could not move the launcher to the user trash."
+    return 1
+  fi
+  update-desktop-database "$DESKTOP_DIR" >/dev/null 2>&1 || true
+  jq -cn --arg file "$file" '{ok:true,desktopFile:$file}'
+}
+
+launch_app() {
+  local requested="$1"
+  local file desktop_id exec_line url
+  file="$(user_desktop_file "$requested")" || {
+    json_error "unsafe-path" "Only a user-owned launcher can be opened."
+    return 2
+  }
+  exec_line="$(desktop_value Exec "$file")"
+  is_webapp_exec "$exec_line" || {
+    json_error "not-webapp" "The selected desktop file is not an Omarchy web app."
+    return 2
+  }
+  desktop_id="$(basename "$file" .desktop)"
+
+  if command -v gtk-launch >/dev/null 2>&1; then
+    gtk-launch "$desktop_id" >/dev/null 2>&1 &
+  elif command -v gio >/dev/null 2>&1; then
+    gio launch "$file" >/dev/null 2>&1 &
+  else
+    url="$(printf '%s\n' "$exec_line" | sed -nE 's/.*(https?:\/\/[^[:space:]\"]+).*/\1/p' | head -n 1)"
+    is_safe_url "$url" || { json_error "no-launcher" "No desktop launcher command is available."; return 1; }
+    omarchy-launch-webapp "$url" >/dev/null 2>&1 &
+  fi
+  jq -cn --arg desktopId "$desktop_id" '{ok:true,desktopId:$desktopId}'
+}
+
+main() {
+  local action="${1:-}"
+  shift || true
+  case "$action" in
+    scan) (($# == 0)) || { json_error "unexpected-argument" "scan takes no arguments."; return 2; }; scan_apps ;;
+    install) install_app "$@" ;;
+    remove)
+      (($# == 2)) || { json_error "invalid-remove" "A desktop file path is required."; return 2; }
+      [[ "$1" == "--desktop-file" ]] || { json_error "invalid-remove" "A desktop file path is required."; return 2; }
+      remove_app "$2"
+      ;;
+    launch)
+      (($# == 2)) || { json_error "invalid-launch" "A desktop file path is required."; return 2; }
+      [[ "$1" == "--desktop-file" ]] || { json_error "invalid-launch" "A desktop file path is required."; return 2; }
+      launch_app "$2"
+      ;;
+    *) json_error "unknown-action" "Unknown Web App Manager action."; return 2 ;;
+  esac
+}
+
+main "$@"
