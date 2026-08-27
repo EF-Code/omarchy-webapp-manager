@@ -2,6 +2,10 @@
 
 An Omarchy bar plugin for discovering, launching, installing, and removing user-owned web-app launchers.
 
+## Preview
+
+![Web App Manager panel](assets/web-app-manager.png)
+
 ## Status
 
 This is the first implementation pass. It supports the core workflow:
