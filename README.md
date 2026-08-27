@@ -4,7 +4,7 @@ An Omarchy bar plugin for discovering, launching, installing, and removing user-
 
 ## Preview
 
-![Web App Manager panel](assets/web-app-manager.png)
+![Web App Manager panel](preview.png)
 
 ## Status
 
