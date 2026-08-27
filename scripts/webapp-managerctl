@@ -16,14 +16,19 @@ json_error() {
     '{ok:false,error:{code:$code,message:$message}}'
 }
 
-is_webapp_exec() {
-  local exec_line="$1"
-  [[ "$exec_line" == *omarchy-launch-webapp* || "$exec_line" == *omarchy-webapp-handler* ]]
+byte_length() {
+  LC_ALL=C printf '%s' "$1" | LC_ALL=C wc -c
+}
+
+within_bytes() {
+  local value="$1"
+  local maximum="$2"
+  (( $(byte_length "$value") <= maximum ))
 }
 
 is_safe_name() {
   local value="$1"
-  [[ -n "$value" && ${#value} -le 120 ]] || return 1
+  [[ -n "$value" ]] && within_bytes "$value" 120 || return 1
   [[ "$value" != "." && "$value" != ".." && "$value" != "all" ]] || return 1
   [[ "$value" != *"/"* && "$value" != *"\\"* ]] || return 1
   [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *$'\t'* ]] || return 1
@@ -31,20 +36,17 @@ is_safe_name() {
 
 is_safe_url() {
   local value="$1"
-  [[ ${#value} -le 2048 ]] || return 1
-  [[ "$value" =~ ^https?://[^[:space:]]+$ ]]
+  within_bytes "$value" 2048 || return 1
+  [[ "$value" =~ ^[Hh][Tt][Tt][Pp][Ss]?://[^[:space:]\"\']+$ ]]
 }
 
 scan_apps() {
   "$SCAN_SCRIPT" "$DESKTOP_DIR" "$DATA_HOME"
 }
 
-safe_desktop_exec() {
+safe_desktop_launch() {
   local file="$1"
-  local response
-
-  response="$("$SCAN_SCRIPT" --read-exec "$file" 2>/dev/null)" || return 1
-  jq -r '.exec // ""' <<<"$response"
+  "$SCAN_SCRIPT" --read-launch "$file" 2>/dev/null
 }
 
 install_app() {
@@ -60,13 +62,19 @@ install_app() {
 
   is_safe_name "$name" || { json_error "invalid-name" "Choose a safe app name."; return 2; }
   is_safe_url "$url" || { json_error "invalid-url" "Use a complete http:// or https:// URL."; return 2; }
-  if [[ -n "$icon" && ! "$icon" =~ ^https?://[^[:space:]]+$ && ! "$icon" =~ ^[A-Za-z0-9._-]+$ ]]; then
+  if ! within_bytes "$icon" 256; then
+    json_error "invalid-icon" "Keep the icon value within 256 UTF-8 bytes."
+    return 2
+  fi
+  if [[ -n "$icon" && ! "$icon" =~ ^[Hh][Tt][Tt][Pp][Ss]?://[^[:space:]\"\']+$ && ! "$icon" =~ ^[A-Za-z0-9._-]+$ ]]; then
     json_error "invalid-icon" "Use an icon name or an http(s) icon URL."
     return 2
   fi
 
-  local output
-  if output="$(omarchy webapp install "$name" "$url" "$icon" 2>&1)"; then
+  local output install_status
+  output="$(omarchy webapp install "$name" "$url" "$icon" 2>&1 | head -c 1001)"
+  install_status=$?
+  if (( install_status == 0 )); then
     jq -cn --arg output "${output:0:1000}" '{ok:true,output:$output}'
     return 0
   fi
@@ -77,6 +85,7 @@ install_app() {
 user_desktop_file() {
   local candidate="$1"
   local expected_dir resolved
+  [[ ! -L "$candidate" ]] || return 1
   expected_dir="$(realpath -m -- "$DESKTOP_DIR")" || return 1
   resolved="$(realpath -e -- "$candidate" 2>/dev/null)" || return 1
   [[ "$resolved" == "$expected_dir/"*.desktop ]] || return 1
@@ -91,24 +100,18 @@ remove_app() {
     return 2
   }
 
-  local exec_line name trash_dir trash_file
-  exec_line="$(safe_desktop_exec "$file")" || {
+  local launch_response
+  launch_response="$(safe_desktop_launch "$file")" || {
     json_error "unsafe-path" "Only a user-owned web-app launcher can be removed."
     return 2
   }
-  is_webapp_exec "$exec_line" || {
+  jq -e '.ok == true and (.launch.kind == "webapp" or .launch.kind == "handler")' \
+    <<<"$launch_response" >/dev/null || {
     json_error "not-webapp" "The selected desktop file is not an Omarchy web app."
     return 2
   }
 
-  name="$(basename "$file" .desktop)"
-  trash_dir="${XDG_DATA_HOME:-$HOME/.local/share}/Trash/files"
-  mkdir -p "$trash_dir"
-  trash_file="$trash_dir/$name.desktop"
-  if [[ -e "$trash_file" ]]; then
-    trash_file="$trash_dir/$name.$$.desktop"
-  fi
-  if ! mv -- "$file" "$trash_file"; then
+  if ! gio trash -- "$file"; then
     json_error "remove-failed" "Could not move the launcher to the user trash."
     return 1
   fi
@@ -118,30 +121,40 @@ remove_app() {
 
 launch_app() {
   local requested="$1"
-  local file desktop_id exec_line url
+  local file desktop_id launch_response kind url handler handler_path
   file="$(user_desktop_file "$requested")" || {
     json_error "unsafe-path" "Only a user-owned launcher can be opened."
     return 2
   }
-  exec_line="$(safe_desktop_exec "$file")" || {
+  launch_response="$(safe_desktop_launch "$file")" || {
     json_error "unsafe-path" "Only a user-owned launcher can be opened."
-    return 2
-  }
-  is_webapp_exec "$exec_line" || {
-    json_error "not-webapp" "The selected desktop file is not an Omarchy web app."
     return 2
   }
   desktop_id="$(basename "$file" .desktop)"
 
-  if command -v gtk-launch >/dev/null 2>&1; then
-    gtk-launch "$desktop_id" >/dev/null 2>&1 &
-  elif command -v gio >/dev/null 2>&1; then
-    gio launch "$file" >/dev/null 2>&1 &
-  else
-    url="$(printf '%s\n' "$exec_line" | sed -nE 's/.*(https?:\/\/[^[:space:]\"]+).*/\1/p' | head -n 1)"
-    is_safe_url "$url" || { json_error "no-launcher" "No desktop launcher command is available."; return 1; }
-    omarchy-launch-webapp "$url" >/dev/null 2>&1 &
-  fi
+  kind="$(jq -r '.launch.kind // ""' <<<"$launch_response")"
+  case "$kind" in
+    webapp)
+      url="$(jq -r '.launch.url // ""' <<<"$launch_response")"
+      is_safe_url "$url" || { json_error "invalid-url" "The launcher URL is invalid."; return 2; }
+      [[ -x /usr/bin/omarchy-launch-webapp ]] || { json_error "no-launcher" "The Omarchy web-app launcher is unavailable."; return 1; }
+      /usr/bin/omarchy-launch-webapp "$url" >/dev/null 2>&1 &
+      ;;
+    handler)
+      handler="$(jq -r '.launch.handler // ""' <<<"$launch_response")"
+      [[ "$handler" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || { json_error "invalid-handler" "The web-app handler is invalid."; return 2; }
+      handler_path="/usr/bin/omarchy-webapp-handler-$handler"
+      [[ -f "$handler_path" && -x "$handler_path" && ! -L "$handler_path" && "$(stat -c %u -- "$handler_path")" == 0 ]] || {
+        json_error "invalid-handler" "The trusted Omarchy web-app handler is unavailable."
+        return 1
+      }
+      "$handler_path" >/dev/null 2>&1 &
+      ;;
+    *)
+      json_error "not-webapp" "The selected desktop file is not an Omarchy web app."
+      return 2
+      ;;
+  esac
   jq -cn --arg desktopId "$desktop_id" '{ok:true,desktopId:$desktopId}'
 }
 

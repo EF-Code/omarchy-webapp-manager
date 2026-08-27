@@ -3,6 +3,7 @@
 use strict;
 use warnings;
 use bytes;
+use Encode qw(decode encode FB_CROAK);
 use Fcntl qw(O_RDONLY O_NOFOLLOW O_NONBLOCK S_IFMT S_IFREG);
 use File::Spec;
 use JSON::PP qw(encode_json);
@@ -33,6 +34,13 @@ sub json_false { return JSON::PP::false; }
 
 sub byte_length {
   return length($_[0]);
+}
+
+sub decode_utf8 {
+  my ($value) = @_;
+  my $decoded = eval { decode("UTF-8", $value, FB_CROAK) };
+  return undef if $@;
+  return $decoded;
 }
 
 sub error_payload {
@@ -121,7 +129,9 @@ sub parse_desktop_entry {
     next if exists $values{$key};
     return (undef, "field-too-large")
       if byte_length($value) > $FIELD_LIMITS{$key};
-    $values{$key} = $value;
+    my $decoded = decode_utf8($value);
+    return (undef, "invalid-encoding") unless defined $decoded;
+    $values{$key} = $decoded;
   }
 
   return (\%values, undef);
@@ -163,17 +173,34 @@ sub read_desktop_entry {
   return ($values, undef);
 }
 
-sub is_webapp_exec {
+sub parse_launch {
   my ($exec_line) = @_;
-  return index($exec_line, "omarchy-launch-webapp") >= 0
-    || index($exec_line, "omarchy-webapp-handler") >= 0;
-}
+  return undef unless defined $exec_line;
 
-sub safe_url {
-  my ($value) = @_;
-  return "" unless defined $value;
-  return $1 if $value =~ /(https?:\/\/[^\s"]+)/i;
-  return "";
+  if ($exec_line =~ /\Aomarchy-launch-webapp ((?i:https?):\/\/[^\s"']+)\z/) {
+    return {
+      kind => "webapp",
+      url  => $1,
+    };
+  }
+
+  if ($exec_line =~ /\Aomarchy-webapp-handler-([A-Za-z0-9][A-Za-z0-9._-]{0,63}) %u\z/) {
+    my $handler = $1;
+    my $handler_path = "/usr/bin/omarchy-webapp-handler-$handler";
+    my @handler_stat = lstat($handler_path);
+    return undef unless @handler_stat
+      && (($handler_stat[2] & S_IFMT) == S_IFREG)
+      && $handler_stat[4] == 0
+      && ($handler_stat[2] & 0111);
+
+    return {
+      kind    => "handler",
+      handler => $handler,
+      url     => "",
+    };
+  }
+
+  return undef;
 }
 
 sub icon_state {
@@ -181,7 +208,7 @@ sub icon_state {
   return "missing" unless defined $icon && length $icon;
 
   if ($icon =~ /\A\//) {
-    return -f $icon ? "present" : "missing";
+    return -f encode("UTF-8", $icon) ? "present" : "missing";
   }
 
   # Keep named-icon checks inside the expected user icon directory.
@@ -208,9 +235,11 @@ sub scan_apps {
     or emit_error("scan-failed", "Could not open the user applications directory.", 1);
 
   my @entries;
+  my $output_bytes = encoded_size({ ok => json_true(), apps => [] });
   while (defined(my $name = readdir($dir))) {
     next if $name eq "." || $name eq "..";
     next unless $name =~ /\.desktop\z/;
+    next if $name =~ /[\x00-\x1f\x7f]/;
 
     my $path = File::Spec->catfile($desktop_dir, $name);
     next if byte_length($path) > MAX_DESKTOP_PATH_BYTES;
@@ -218,27 +247,34 @@ sub scan_apps {
     (my $desktop_id = $name) =~ s/\.desktop\z//;
     next if byte_length($desktop_id) > MAX_DESKTOP_ID_BYTES;
 
+    my $json_path = decode_utf8($path);
+    my $json_desktop_id = decode_utf8($desktop_id);
+    next unless defined $json_path && defined $json_desktop_id;
+
     my ($values) = read_desktop_entry($path);
-    next unless $values && is_webapp_exec($values->{Exec} // "");
+    next unless $values;
 
     my $exec_line = $values->{Exec} // "";
-    my $name_value = exists $values->{Name} ? $values->{Name} : $desktop_id;
+    my $launch = parse_launch($exec_line);
+    next unless $launch;
+
+    my $name_value = exists $values->{Name} ? $values->{Name} : $json_desktop_id;
     next if byte_length($name_value) > MAX_NAME_BYTES;
 
-    my $url = safe_url($exec_line);
+    my $url = $launch->{url};
     next if byte_length($url) > MAX_URL_BYTES;
 
     my $icon = $values->{Icon} // "";
     my $mime_types = $values->{MimeType} // "";
-    my $is_handler = index($exec_line, "omarchy-webapp-handler") >= 0;
-    my $kind = $is_handler ? "handler" : "webapp";
-    my $status = $is_handler ? "handler" : ($url ne "" ? "healthy" : "invalid-url");
+    my $is_handler = $launch->{kind} eq "handler";
+    my $kind = $launch->{kind};
+    my $status = $is_handler ? "handler" : "healthy";
     my $icon_status = icon_state($icon, $data_home);
     $status = "missing-icon" if $status eq "healthy" && $icon_status eq "missing";
 
     my $entry = {
-      desktopFile => $path,
-      desktopId   => $desktop_id,
+      desktopFile => $json_path,
+      desktopId   => $json_desktop_id,
       name        => $name_value,
       url         => $url,
       exec        => $exec_line,
@@ -249,9 +285,11 @@ sub scan_apps {
       status      => $status,
     };
 
-    my $candidate = { ok => json_true(), apps => [@entries, $entry] };
+    my $entry_bytes = byte_length(encode_json($entry));
+    my $candidate_bytes = $output_bytes + (@entries ? 1 : 0) + $entry_bytes;
     emit_error("output-limit", "The web-app scan result is too large.", 1)
-      if encoded_size($candidate) > MAX_OUTPUT_BYTES;
+      if $candidate_bytes > MAX_OUTPUT_BYTES;
+    $output_bytes = $candidate_bytes;
     push @entries, $entry;
     last if @entries >= MAX_APPS;
   }
@@ -260,19 +298,24 @@ sub scan_apps {
   return { ok => json_true(), apps => \@entries };
 }
 
-sub read_exec {
+sub read_launch {
   my ($path) = @_;
   my ($values, $error) = read_desktop_entry($path);
   emit_error("$error", "The selected desktop file could not be read safely.", 2)
     unless $values;
-  return { ok => json_true(), exec => ($values->{Exec} // "") };
+
+  my $launch = parse_launch($values->{Exec} // "");
+  emit_error("not-webapp", "The selected desktop file is not an Omarchy web app.", 2)
+    unless $launch;
+
+  return { ok => json_true(), launch => $launch };
 }
 
-if (@ARGV >= 1 && $ARGV[0] eq "--read-exec") {
+if (@ARGV >= 1 && $ARGV[0] eq "--read-launch") {
   shift @ARGV;
   emit_error("invalid-arguments", "A desktop file path is required.", 2)
     unless @ARGV == 1;
-  emit_payload(read_exec($ARGV[0]), 0);
+  emit_payload(read_launch($ARGV[0]), 0);
 }
 
 emit_error("invalid-arguments", "A desktop directory and data directory are required.", 2)

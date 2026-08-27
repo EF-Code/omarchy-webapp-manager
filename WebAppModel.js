@@ -2,6 +2,22 @@
 
 var MAX_APPS = 256
 
+function utf8Bytes(value) {
+  var textValue = String(value === undefined || value === null ? "" : value)
+  var bytes = 0
+  for (var i = 0; i < textValue.length; i++) {
+    var code = textValue.charCodeAt(i)
+    if (code < 0x80) bytes += 1
+    else if (code < 0x800) bytes += 2
+    else if (code >= 0xd800 && code <= 0xdbff && i + 1 < textValue.length
+             && textValue.charCodeAt(i + 1) >= 0xdc00 && textValue.charCodeAt(i + 1) <= 0xdfff) {
+      bytes += 4
+      i += 1
+    } else bytes += 3
+  }
+  return bytes
+}
+
 function text(value, limit) {
   var result = String(value === undefined || value === null ? "" : value)
   if (result.length > limit) return result.slice(0, limit)
@@ -56,25 +72,27 @@ function filteredApps(values, query) {
 }
 
 function normalizeUrl(value) {
-  var raw = text(value, 2048).trim()
+  var raw = String(value === undefined || value === null ? "" : value).trim()
   if (raw === "") return { ok: false, message: "Enter a URL." }
   if (!/^https?:\/\//i.test(raw)) raw = "https://" + raw
-  if (!/^https?:\/\/[^\s]+$/i.test(raw)) return { ok: false, message: "Use a valid http:// or https:// URL." }
+  if (utf8Bytes(raw) > 2048 || !/^https?:\/\/[^\s"']+$/i.test(raw)) return { ok: false, message: "Use a valid http:// or https:// URL within 2048 UTF-8 bytes." }
   return { ok: true, value: raw }
 }
 
 function normalizeName(value) {
-  var raw = text(value, 120).trim()
+  var raw = String(value === undefined || value === null ? "" : value).trim()
   if (raw === "") return { ok: false, message: "Enter an app name." }
+  if (utf8Bytes(raw) > 120) return { ok: false, message: "Keep the app name within 120 UTF-8 bytes." }
   if (raw === "." || raw === ".." || raw === "all") return { ok: false, message: "Choose a different app name." }
   if (/[\u0000-\u001f\u007f/\\]/.test(raw)) return { ok: false, message: "The app name contains an unsafe character." }
   return { ok: true, value: raw }
 }
 
 function normalizeIcon(value) {
-  var raw = text(value, 2048).trim()
+  var raw = String(value === undefined || value === null ? "" : value).trim()
   if (raw === "") return { ok: true, value: "" }
-  if (/^https?:\/\/[^\s]+$/i.test(raw)) return { ok: true, value: raw }
+  if (utf8Bytes(raw) > 256) return { ok: false, message: "Keep the icon value within 256 UTF-8 bytes." }
+  if (/^https?:\/\/[^\s"']+$/i.test(raw)) return { ok: true, value: raw }
   if (/^[A-Za-z0-9._-]+$/.test(raw)) return { ok: true, value: raw }
   return { ok: false, message: "Use an icon name or an http(s) icon URL." }
 }
@@ -110,7 +128,7 @@ function keyHelp() {
 
 if (typeof module !== "undefined") {
   module.exports = {
-    parseResponse, normalizeApps, filteredApps, normalizeUrl,
+    parseResponse, normalizeApps, filteredApps, normalizeUrl, utf8Bytes,
     normalizeName, normalizeIcon, iconText, statusLabel, summary, keyHelp
   }
 }
