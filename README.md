@@ -16,11 +16,11 @@ This is the first implementation pass. It supports the core workflow:
 - Move a selected launcher to the user trash for reversible removal.
 - Report invalid URLs, missing icons, and protocol handlers.
 
-The plugin deliberately does not expose arbitrary desktop-file `Exec=` commands or MIME-type editing yet.
+The plugin accepts only exact `omarchy-launch-webapp <http(s)-url>` and `omarchy-webapp-handler-<name> %u` command templates. It never executes an arbitrary desktop-file `Exec=` command and does not expose MIME-type editing.
 
 ## Security boundaries
 
-Desktop-entry scanning uses Omarchy's Perl dependency with core modules to open each candidate once using O_NOFOLLOW|O_NONBLOCK, verify a user-owned regular-file descriptor, and enforce bounded file, field, and JSON-output sizes. Oversized, replaced, or non-regular entries are skipped safely.
+Desktop-entry scanning uses Omarchy's Perl dependency with core modules to open each candidate once using O_NOFOLLOW|O_NONBLOCK, verify a user-owned regular-file descriptor, and enforce bounded file, field, and JSON-output sizes. Launching consumes the same strict parser result and invokes only trusted Omarchy executables, avoiding a second desktop-file open. Oversized, replaced, non-regular, or nonconforming entries are skipped safely.
 
 ## Install for local development
 
@@ -43,11 +43,10 @@ The plugin uses Omarchy's existing command surface for installation:
 
 ```text
 omarchy webapp install [name url icon-url-or-name]
-omarchy webapp remove [name]
 omarchy-launch-webapp <url>
 ```
 
-The helper scans only `${XDG_DATA_HOME:-$HOME/.local/share}/applications` and refuses to mutate system desktop entries.
+The helper scans only `${XDG_DATA_HOME:-$HOME/.local/share}/applications`, refuses to mutate system desktop entries, and uses the freedesktop trash service for reversible removal.
 
 ## Validation
 
@@ -57,7 +56,7 @@ qmllint -I "${OMARCHY_PATH:-/usr/share/omarchy}/shell" \
   BarWidget.qml Panel.qml WebAppController.qml WebAppModel.js
 bash -n scripts/webapp-managerctl
 perl -c scripts/webapp-manager-scan.pl
-shellcheck -S style scripts/webapp-managerctl
+shellcheck -S style scripts/webapp-managerctl tests/test-webapp-managerctl.sh
 tests/test-webapp-managerctl.sh
 scripts/webapp-managerctl scan | jq .
 ```
