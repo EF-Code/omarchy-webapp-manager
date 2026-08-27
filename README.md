@@ -18,6 +18,10 @@ This is the first implementation pass. It supports the core workflow:
 
 The plugin deliberately does not expose arbitrary desktop-file `Exec=` commands or MIME-type editing yet.
 
+## Security boundaries
+
+Desktop-entry scanning uses Omarchy's Perl dependency with core modules to open each candidate once using O_NOFOLLOW|O_NONBLOCK, verify a user-owned regular-file descriptor, and enforce bounded file, field, and JSON-output sizes. Oversized, replaced, or non-regular entries are skipped safely.
+
 ## Install for local development
 
 Clone or copy this repository into the Omarchy user plugin directory:
@@ -50,8 +54,11 @@ The helper scans only `${XDG_DATA_HOME:-$HOME/.local/share}/applications` and re
 ```bash
 omarchy plugin validate .
 qmllint -I "${OMARCHY_PATH:-/usr/share/omarchy}/shell" \
-  BarWidget.qml Panel.qml WebAppController.qml
+  BarWidget.qml Panel.qml WebAppController.qml WebAppModel.js
 bash -n scripts/webapp-managerctl
+perl -c scripts/webapp-manager-scan.pl
+shellcheck -S style scripts/webapp-managerctl
+tests/test-webapp-managerctl.sh
 scripts/webapp-managerctl scan | jq .
 ```
 
