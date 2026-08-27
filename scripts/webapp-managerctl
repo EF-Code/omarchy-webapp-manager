@@ -3,33 +3,17 @@
 set -u
 set -o pipefail
 
-readonly MAX_APPS=256
 readonly DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 readonly DESKTOP_DIR="$DATA_HOME/applications"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)" || exit 1
+readonly SCRIPT_DIR
+readonly SCAN_SCRIPT="$SCRIPT_DIR/webapp-manager-scan.pl"
 
 json_error() {
   local code="$1"
   local message="$2"
   jq -cn --arg code "$code" --arg message "$message" \
     '{ok:false,error:{code:$code,message:$message}}'
-}
-
-json_ok() {
-  jq -cn '{ok:true}'
-}
-
-desktop_value() {
-  local key="$1"
-  local file="$2"
-
-  awk -v key="$key" '
-    $0 == "[Desktop Entry]" { in_entry = 1; next }
-    /^\[/ { if (in_entry) exit }
-    in_entry && index($0, key "=") == 1 {
-      print substr($0, length(key) + 2)
-      exit
-    }
-  ' "$file"
 }
 
 is_webapp_exec() {
@@ -51,80 +35,16 @@ is_safe_url() {
   [[ "$value" =~ ^https?://[^[:space:]]+$ ]]
 }
 
-icon_state() {
-  local icon="$1"
-  local icon_dir="$DATA_HOME/icons/hicolor/256x256/apps"
-
-  if [[ -z "$icon" ]]; then
-    printf '%s\n' "missing"
-    return
-  fi
-  if [[ "$icon" == /* ]]; then
-    [[ -f "$icon" ]] && printf '%s\n' "present" || printf '%s\n' "missing"
-    return
-  fi
-  if [[ -f "$icon_dir/$icon.png" || -f "$icon_dir/$icon.svg" || -f "$icon_dir/$icon.webp" ]]; then
-    printf '%s\n' "present"
-    return
-  fi
-  # Named icons may be supplied by the system theme; leave those as unknown
-  # rather than walking all of /usr/share/icons on every panel refresh.
-  printf '%s\n' "unknown"
+scan_apps() {
+  "$SCAN_SCRIPT" "$DESKTOP_DIR" "$DATA_HOME"
 }
 
-scan_apps() {
-  local -a entries=()
-  local file exec_line name url icon mime_types kind status icon_status desktop_id
+safe_desktop_exec() {
+  local file="$1"
+  local response
 
-  if [[ ! -d "$DESKTOP_DIR" ]]; then
-    jq -cn '{ok:true,apps:[]}'
-    return 0
-  fi
-
-  while IFS= read -r -d '' file; do
-    exec_line="$(desktop_value Exec "$file")"
-    is_webapp_exec "$exec_line" || continue
-
-    name="$(desktop_value Name "$file")"
-    desktop_id="$(basename "$file" .desktop)"
-    [[ -n "$name" ]] || name="$desktop_id"
-    url="$(printf '%s\n' "$exec_line" | sed -nE 's/.*(https?:\/\/[^[:space:]\"]+).*/\1/p' | head -n 1)"
-    icon="$(desktop_value Icon "$file")"
-    mime_types="$(desktop_value MimeType "$file")"
-    kind="webapp"
-    status="healthy"
-
-    if [[ "$exec_line" == *omarchy-webapp-handler* ]]; then
-      kind="handler"
-      status="handler"
-    elif ! is_safe_url "$url"; then
-      status="invalid-url"
-    fi
-
-    icon_status="$(icon_state "$icon")"
-    [[ "$status" == "healthy" && "$icon_status" == "missing" ]] && status="missing-icon"
-
-    entries+=("$(jq -cn \
-      --arg desktopFile "$file" \
-      --arg desktopId "$desktop_id" \
-      --arg name "$name" \
-      --arg url "$url" \
-      --arg exec "$exec_line" \
-      --arg icon "$icon" \
-      --arg iconState "$icon_status" \
-      --arg mimeTypes "$mime_types" \
-      --arg kind "$kind" \
-      --arg status "$status" \
-      '{desktopFile:$desktopFile,desktopId:$desktopId,name:$name,url:$url,exec:$exec,icon:$icon,iconState:$iconState,mimeTypes:$mimeTypes,kind:$kind,status:$status}')")
-
-    ((${#entries[@]} >= MAX_APPS)) && break
-  done < <(find "$DESKTOP_DIR" -maxdepth 1 -type f -name '*.desktop' -print0 | sort -z)
-
-  if ((${#entries[@]} == 0)); then
-    jq -cn '{ok:true,apps:[]}'
-  else
-    printf '%s\n' "${entries[@]}" | jq -sc '{ok:true,apps:.}'
-  fi
+  response="$("$SCAN_SCRIPT" --read-exec "$file" 2>/dev/null)" || return 1
+  jq -r '.exec // ""' <<<"$response"
 }
 
 install_app() {
@@ -172,7 +92,10 @@ remove_app() {
   }
 
   local exec_line name trash_dir trash_file
-  exec_line="$(desktop_value Exec "$file")"
+  exec_line="$(safe_desktop_exec "$file")" || {
+    json_error "unsafe-path" "Only a user-owned web-app launcher can be removed."
+    return 2
+  }
   is_webapp_exec "$exec_line" || {
     json_error "not-webapp" "The selected desktop file is not an Omarchy web app."
     return 2
@@ -200,7 +123,10 @@ launch_app() {
     json_error "unsafe-path" "Only a user-owned launcher can be opened."
     return 2
   }
-  exec_line="$(desktop_value Exec "$file")"
+  exec_line="$(safe_desktop_exec "$file")" || {
+    json_error "unsafe-path" "Only a user-owned launcher can be opened."
+    return 2
+  }
   is_webapp_exec "$exec_line" || {
     json_error "not-webapp" "The selected desktop file is not an Omarchy web app."
     return 2
