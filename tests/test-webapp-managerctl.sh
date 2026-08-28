@@ -17,6 +17,7 @@ data_home="$tmp_dir/data"
 applications="$data_home/applications"
 mock_bin="$tmp_dir/bin"
 mkdir -p "$applications" "$data_home/icons/hicolor/256x256/apps" "$mock_bin"
+: > "$data_home/icons/hicolor/256x256/apps/example.png"
 
 cat > "$mock_bin/omarchy" <<'EOF'
 #!/usr/bin/env bash
@@ -69,6 +70,7 @@ printf '%s\n' "$scan_output" | jq -e '
   and .apps[0].name == "Example"
   and .apps[0].url == "https://example.com"
   and .apps[0].kind == "webapp"
+  and (.apps[0].iconPath | endswith("/icons/hicolor/256x256/apps/example.png"))
 ' >/dev/null || fail "normal web-app scan"
 
 launch_output="$("$scanner" --read-launch "$applications/example.desktop")"
@@ -103,7 +105,24 @@ unicode_output="$(scan)"
 printf '%s\n' "$unicode_output" | jq -e '
   .ok == true
   and ([.apps[] | select(.desktopId == "unicode")][0].name == "Café")
+  and ([.apps[] | select(.desktopId == "unicode")][0].iconPath == "")
 ' >/dev/null || fail "UTF-8 desktop field decoding"
+
+ln -s example.png "$data_home/icons/hicolor/256x256/apps/symlink-icon.png"
+cat > "$applications/symlink-icon.desktop" <<'EOF'
+[Desktop Entry]
+Name=Symlink Icon
+Exec=omarchy-launch-webapp https://symlink-icon.example
+Icon=symlink-icon
+EOF
+
+scan_output="$(scan)"
+printf '%s\n' "$scan_output" | jq -e '
+  .ok == true
+  and (.apps | length == 4)
+  and ([.apps[] | select(.desktopId == "symlink-icon")][0].iconPath == "")
+  and ([.apps[] | select(.desktopId == "symlink-icon")][0].iconState == "unknown")
+' >/dev/null || fail "symlink icon was not excluded safely"
 
 cat > "$applications/crafted.desktop" <<'EOF'
 [Desktop Entry]
@@ -122,7 +141,7 @@ EOF
 scan_output="$(scan)"
 printf '%s\n' "$scan_output" | jq -e '
   .ok == true
-  and (.apps | length == 3)
+  and (.apps | length == 4)
   and ([.apps[].desktopId] | index("crafted") == null)
   and ([.apps[].desktopId] | index("fake-handler") == null)
 ' >/dev/null || fail "arbitrary Exec command was not excluded"
@@ -150,7 +169,7 @@ ln -s example.desktop "$applications/symlink.desktop"
 mkfifo "$applications/fifo.desktop"
 
 scan_output="$(timeout 2s env XDG_DATA_HOME="$data_home" "$helper" scan)" || fail "FIFO scan returned a failure or blocked"
-printf '%s\n' "$scan_output" | jq -e '.ok == true and (.apps | length == 3)' >/dev/null \
+printf '%s\n' "$scan_output" | jq -e '.ok == true and (.apps | length == 4)' >/dev/null \
   || fail "symlink/FIFO entries were not excluded"
 
 {
@@ -184,7 +203,7 @@ printf '%s\n' "$scan_output" | jq -e '.ok == true and (.apps | length == 3)' >/d
 } > "$applications/oversized-mime.desktop"
 
 scan_output="$(scan)" || fail "bounded scan after oversized fixtures"
-printf '%s\n' "$scan_output" | jq -e '.ok == true and (.apps | length == 3)' >/dev/null \
+printf '%s\n' "$scan_output" | jq -e '.ok == true and (.apps | length == 4)' >/dev/null \
   || fail "oversized file or field was not rejected"
 
 set +e

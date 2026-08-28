@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "io.github.ef-code.webapp-manager",
   "name": "Web App Manager",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "author": "EF-Code",
   "license": "MIT",
   "description": "Discover, launch, install, and remove Omarchy web-app launchers from the bar.",

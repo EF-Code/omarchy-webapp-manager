@@ -312,6 +312,17 @@ Panel {
             delegate: Rectangle {
               required property var modelData
               required property int index
+              readonly property string iconSource: {
+                var localPath = String(modelData.iconPath || "")
+                if (localPath.charAt(0) === "/") return Util.fileUrl(localPath)
+
+                // Named icons can also come from the active system theme when
+                // Omarchy did not create a user-local copy.
+                var iconName = String(modelData.icon || "")
+                return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(iconName)
+                  ? Quickshell.iconPath(iconName, true)
+                  : ""
+              }
               width: appList.width
               height: Style.space(66)
               radius: Style.cornerRadius
@@ -328,12 +339,35 @@ Panel {
                 anchors.rightMargin: Style.space(10)
                 spacing: Style.space(9)
 
-                Rectangle {
+                Item {
                   Layout.preferredWidth: Style.space(34)
                   Layout.preferredHeight: Style.space(34)
-                  radius: Style.cornerRadius
-                  color: Qt.alpha(Color.accent, 0.18)
-                  Text { anchors.centerIn: parent; text: Model.iconText(modelData); color: Color.accent; font.family: Style.font.family; font.pixelSize: Style.font.body; font.bold: true }
+                  Rectangle {
+                    anchors.fill: parent
+                    radius: Style.cornerRadius
+                    color: Qt.alpha(Color.accent, 0.18)
+                  }
+                  Image {
+                    id: appIconImage
+                    anchors.fill: parent
+                    anchors.margins: Style.space(4)
+                    source: iconSource
+                    fillMode: Image.PreserveAspectFit
+                    sourceSize.width: Math.round(width * Screen.devicePixelRatio)
+                    sourceSize.height: Math.round(height * Screen.devicePixelRatio)
+                    asynchronous: true
+                    smooth: true
+                    visible: status === Image.Ready
+                  }
+                  Text {
+                    anchors.centerIn: parent
+                    visible: appIconImage.status !== Image.Ready
+                    text: Model.iconText(modelData)
+                    color: Color.accent
+                    font.family: Style.font.family
+                    font.pixelSize: Style.font.body
+                    font.bold: true
+                  }
                 }
 
                 ColumnLayout {

@@ -19,6 +19,7 @@ use constant {
   MAX_EXEC_BYTES           => 512,
   MAX_URL_BYTES            => 2048,
   MAX_ICON_BYTES           => 256,
+  MAX_ICON_PATH_BYTES      => 1024,
   MAX_MIME_TYPES_BYTES     => 512,
 };
 
@@ -203,8 +204,43 @@ sub parse_launch {
   return undef;
 }
 
-sub icon_state {
+sub named_icon_path {
   my ($icon, $data_home) = @_;
+  return undef unless defined $icon && length $icon;
+
+  # Omarchy's web-app installer writes downloaded/user-supplied icons here
+  # and stores only the icon basename in the desktop entry. Keep this lookup
+  # confined to that directory; theme lookup remains a QML fallback.
+  return undef unless $icon =~ /\A[A-Za-z0-9._-]+\z/;
+  my $icon_dir = File::Spec->catdir(
+    $data_home,
+    "icons",
+    "hicolor",
+    "256x256",
+    "apps",
+  );
+  my $icon_name = encode("UTF-8", $icon);
+
+  for my $extension (qw(png svg webp)) {
+    my $candidate = File::Spec->catfile($icon_dir, "$icon_name.$extension");
+    next if byte_length($candidate) > MAX_ICON_PATH_BYTES;
+
+    # lstat() deliberately rejects a symlink. This keeps the emitted path
+    # tied to a user-owned regular file when QML opens it later.
+    my @stat = lstat($candidate);
+    next unless @stat
+      && (($stat[2] & S_IFMT) == S_IFREG)
+      && $stat[4] == $<;
+
+    my $json_candidate = decode_utf8($candidate);
+    return $json_candidate if defined $json_candidate;
+  }
+
+  return undef;
+}
+
+sub icon_state {
+  my ($icon, $data_home, $resolved_path, $path_checked) = @_;
   return "missing" unless defined $icon && length $icon;
 
   if ($icon =~ /\A\//) {
@@ -213,17 +249,9 @@ sub icon_state {
 
   # Keep named-icon checks inside the expected user icon directory.
   return "unknown" unless $icon =~ /\A[A-Za-z0-9._-]+\z/;
-  my $icon_dir = File::Spec->catdir(
-    $data_home,
-    "icons",
-    "hicolor",
-    "256x256",
-    "apps",
-  );
+  return defined $resolved_path ? "present" : "unknown" if $path_checked;
   return "present"
-    if -f File::Spec->catfile($icon_dir, "$icon.png")
-    || -f File::Spec->catfile($icon_dir, "$icon.svg")
-    || -f File::Spec->catfile($icon_dir, "$icon.webp");
+    if defined $resolved_path || defined named_icon_path($icon, $data_home);
   return "unknown";
 }
 
@@ -269,7 +297,14 @@ sub scan_apps {
     my $is_handler = $launch->{kind} eq "handler";
     my $kind = $launch->{kind};
     my $status = $is_handler ? "handler" : "healthy";
-    my $icon_status = icon_state($icon, $data_home);
+    my $resolved_icon_path = named_icon_path($icon, $data_home);
+    my $icon_path = $resolved_icon_path // "";
+    my $icon_status = icon_state(
+      $icon,
+      $data_home,
+      $resolved_icon_path,
+      1,
+    );
     $status = "missing-icon" if $status eq "healthy" && $icon_status eq "missing";
 
     my $entry = {
@@ -280,6 +315,7 @@ sub scan_apps {
       exec        => $exec_line,
       icon        => $icon,
       iconState   => $icon_status,
+      iconPath    => $icon_path,
       mimeTypes   => $mime_types,
       kind        => $kind,
       status      => $status,

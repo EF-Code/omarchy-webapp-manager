@@ -43,6 +43,7 @@ function normalizeApp(value) {
     exec: text(app.exec, 512),
     icon: text(app.icon, 256),
     iconState: text(app.iconState || "unknown", 32),
+    iconPath: text(app.iconPath, 1024),
     mimeTypes: text(app.mimeTypes, 512),
     kind: app.kind === "handler" ? "handler" : "webapp",
     status: text(app.status || "unknown", 32)
@@ -98,7 +99,9 @@ function normalizeIcon(value) {
 }
 
 function iconText(app) {
-  return app && app.icon ? String(app.icon).slice(0, 1).toUpperCase() : "󰖟"
+  var icon = app && app.icon ? String(app.icon) : ""
+  var match = icon.match(/[A-Za-z0-9]/)
+  return match ? match[0].toUpperCase() : "󰖟"
 }
 
 function statusLabel(app) {

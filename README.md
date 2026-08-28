@@ -15,6 +15,8 @@ This is the first implementation pass. It supports the core workflow:
 - Install a new web app through `omarchy webapp install`.
 - Move a selected launcher to the user trash for reversible removal.
 - Report invalid URLs, missing icons, and protocol handlers.
+- Show each installed app's local icon from Omarchy's user icon store, with a
+  system-theme fallback and a letter fallback when no icon can be resolved.
 
 The plugin accepts only exact `omarchy-launch-webapp <http(s)-url>` and `omarchy-webapp-handler-<name> %u` command templates. It never executes an arbitrary desktop-file `Exec=` command and does not expose MIME-type editing.
 
@@ -36,6 +38,16 @@ Add the widget to the bar using the normal Omarchy plugin workflow, then reload 
 ```bash
 omarchy-shell shell rescanPlugins
 ```
+
+## Icon handling
+
+Omarchy's web-app installer stores downloaded or user-provided icons in the
+user hicolor application icon directory and records the icon basename in the
+desktop entry. The scanner reports a matching local PNG, SVG, or WebP path to
+the panel; the panel loads that path without downloading anything. If the
+installer was given a package-owned icon name instead, the active Omarchy icon
+theme is queried locally. Missing or unavailable icons fall back to a compact
+letter, so the list remains usable.
 
 ## Native commands used
 
@@ -64,7 +76,6 @@ scripts/webapp-managerctl scan | jq .
 ## Roadmap
 
 - Browser/profile selection using an allowlisted command template.
-- Icon preview and refresh.
 - Desktop-entry repair and backup history.
 - MIME association management with an explicit warning.
 - Import/export of web-app definitions.
