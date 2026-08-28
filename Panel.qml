@@ -1,7 +1,6 @@
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
-import Qt5Compat.GraphicalEffects
 import Quickshell
 import qs.Commons
 import qs.Ui
@@ -313,7 +312,6 @@ Panel {
             delegate: Rectangle {
               required property var modelData
               required property int index
-              readonly property bool roundIcon: Model.isRoundIcon(modelData)
               readonly property string iconSource: {
                 var localPath = String(modelData.iconPath || "")
                 if (localPath.charAt(0) === "/") return Util.fileUrl(localPath)
@@ -346,7 +344,7 @@ Panel {
                   Layout.preferredHeight: Style.space(34)
                   Rectangle {
                     anchors.fill: parent
-                    radius: roundIcon ? width / 2 : Style.cornerRadius
+                    radius: Style.cornerRadius
                     color: Qt.alpha(Color.accent, 0.18)
                   }
                   Image {
@@ -359,19 +357,7 @@ Panel {
                     sourceSize.height: Math.round(height * Screen.devicePixelRatio)
                     asynchronous: true
                     smooth: true
-                    visible: !roundIcon && status === Image.Ready
-                  }
-                  OpacityMask {
-                    id: roundIconMask
-                    anchors.fill: appIconImage
-                    source: appIconImage
-                    maskSource: Rectangle {
-                      width: roundIconMask.width
-                      height: roundIconMask.height
-                      radius: Math.min(width, height) / 2
-                      color: "white"
-                    }
-                    visible: roundIcon && appIconImage.status === Image.Ready
+                    visible: status === Image.Ready
                   }
                   Text {
                     anchors.centerIn: parent

@@ -104,11 +104,6 @@ function iconText(app) {
   return match ? match[0].toUpperCase() : "󰖟"
 }
 
-function isRoundIcon(app) {
-  var icon = app && app.icon ? String(app.icon).toLowerCase() : ""
-  return icon === "proton-mail" || icon === "yahoo-finance"
-}
-
 function statusLabel(app) {
   if (!app) return "Unknown"
   if (app.status === "healthy") return "Healthy"
@@ -137,6 +132,6 @@ function keyHelp() {
 if (typeof module !== "undefined") {
   module.exports = {
     parseResponse, normalizeApps, filteredApps, normalizeUrl, utf8Bytes,
-    normalizeName, normalizeIcon, iconText, isRoundIcon, statusLabel, summary, keyHelp
+    normalizeName, normalizeIcon, iconText, statusLabel, summary, keyHelp
   }
 }
