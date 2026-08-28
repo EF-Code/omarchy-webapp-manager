@@ -17,6 +17,7 @@ This is the first implementation pass. It supports the core workflow:
 - Report invalid URLs, missing icons, and protocol handlers.
 - Show each installed app's local icon from Omarchy's user icon store, with a
   system-theme fallback and a letter fallback when no icon can be resolved.
+- Render Proton Mail and Yahoo Finance previews as circular icons.
 
 The plugin accepts only exact `omarchy-launch-webapp <http(s)-url>` and `omarchy-webapp-handler-<name> %u` command templates. It never executes an arbitrary desktop-file `Exec=` command and does not expose MIME-type editing.
 
@@ -44,10 +45,11 @@ omarchy-shell shell rescanPlugins
 Omarchy's web-app installer stores downloaded or user-provided icons in the
 user hicolor application icon directory and records the icon basename in the
 desktop entry. The scanner reports a matching local PNG, SVG, or WebP path to
-the panel; the panel loads that path without downloading anything. If the
-installer was given a package-owned icon name instead, the active Omarchy icon
-theme is queried locally. Missing or unavailable icons fall back to a compact
-letter, so the list remains usable.
+the panel; the panel loads that path without downloading anything. Proton Mail
+and Yahoo Finance are masked into circular previews at render time; their
+stored files are not changed. If the installer was given a package-owned icon
+name instead, the active Omarchy icon theme is queried locally. Missing or
+unavailable icons fall back to a compact letter, so the list remains usable.
 
 ## Native commands used
 
